@@ -410,14 +410,14 @@ Be conversational and helpful!'''
     String processedText = responseText;
     
     // Enhanced patterns for more robust JSON tool detection
-    final singleJsonPattern = RegExp(r'```json\s*(\{[^`]*?["\']tool_use["\']\s*:\s*true[^`]*?\})\s*```', dotAll: true, multiLine: true);
+    final singleJsonPattern = RegExp(r'```json\s*(\{[^`]*?["\x27]tool_use["\x27]\s*:\s*true[^`]*?\})\s*```', dotAll: true, multiLine: true);
     
     // Look for parallel tool calls (array of tool calls)
-    final parallelJsonPattern = RegExp(r'```json\s*(\[[^`]*?["\']tool_use["\']\s*:\s*true[^`]*?\])\s*```', dotAll: true, multiLine: true);
+    final parallelJsonPattern = RegExp(r'```json\s*(\[[^`]*?["\x27]tool_use["\x27]\s*:\s*true[^`]*?\])\s*```', dotAll: true, multiLine: true);
     
     // Also look for tool calls without explicit tool_use flag
-    final implicitToolPattern = RegExp(r'```json\s*(\{[^`]*?["\']tool_name["\']\s*:\s*["\'][^"\']+["\'][^`]*?\})\s*```', dotAll: true, multiLine: true);
-    final implicitParallelPattern = RegExp(r'```json\s*(\[[^`]*?["\']tool_name["\']\s*:\s*["\'][^"\']+["\'][^`]*?\])\s*```', dotAll: true, multiLine: true);
+    final implicitToolPattern = RegExp(r'```json\s*(\{[^`]*?["\x27]tool_name["\x27]\s*:\s*["\x27][^"\x27]+["\x27][^`]*?\})\s*```', dotAll: true, multiLine: true);
+    final implicitParallelPattern = RegExp(r'```json\s*(\[[^`]*?["\x27]tool_name["\x27]\s*:\s*["\x27][^"\x27]+["\x27][^`]*?\])\s*```', dotAll: true, multiLine: true);
     
     final singleMatches = singleJsonPattern.allMatches(responseText);
     final parallelMatches = parallelJsonPattern.allMatches(responseText);
