@@ -1266,8 +1266,6 @@ class ExternalToolsService extends ChangeNotifier {
   }
 
   String _generateCollageHtml(List<String> imageUrls, String layout, int maxWidth, int maxHeight) {
-    final images = imageUrls.map((url, index) => MapEntry(index, url));
-    
     switch (layout.toLowerCase()) {
       case 'horizontal':
         return '''
