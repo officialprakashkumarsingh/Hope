@@ -333,10 +333,12 @@ class ExternalToolsService extends ChangeNotifier {
         };
       }
 
-      // Use WordPress.com mshots API for screenshots
-      final cacheBust = DateTime.now().millisecondsSinceEpoch;
+      // Use WordPress.com mshots API for screenshots with unique parameters
+      final timestamp = DateTime.now().microsecondsSinceEpoch;
+      final urlHash = parsedUrl.toString().hashCode.abs();
+      final uniqueId = '${timestamp}_${urlHash}';
       final screenshotUrl =
-          'https://s0.wp.com/mshots/v1/${Uri.encodeComponent(parsedUrl.toString())}?w=$width&h=$height&cb=$cacheBust';
+          'https://s0.wp.com/mshots/v1/${Uri.encodeComponent(parsedUrl.toString())}?w=$width&h=$height&cb=$uniqueId&refresh=1&vpw=$width&vph=$height';
       
       // Verify the screenshot service is accessible with a longer timeout
       try {
@@ -396,10 +398,16 @@ class ExternalToolsService extends ChangeNotifier {
           parsedUrl = Uri.parse(url);
         }
 
-        // Use WordPress.com mshots API for screenshots
-        final cacheBust = DateTime.now().millisecondsSinceEpoch;
+        // Use WordPress.com mshots API for screenshots with unique parameters to prevent caching issues
+        final timestamp = DateTime.now().microsecondsSinceEpoch;
+        final uniqueId = '${timestamp}_${i}_${url.hashCode.abs()}';
         final screenshotUrl =
-            'https://s0.wp.com/mshots/v1/${Uri.encodeComponent(parsedUrl.toString())}?w=$width&h=$height&cb=$cacheBust';
+            'https://s0.wp.com/mshots/v1/${Uri.encodeComponent(parsedUrl.toString())}?w=$width&h=$height&cb=$uniqueId&refresh=1&vpw=$width&vph=$height';
+        
+        // Add delay between screenshots to ensure different results
+        if (i > 0) {
+          await Future.delayed(Duration(milliseconds: 300));
+        }
         
         screenshots.add({
           'index': i + 1,
@@ -408,6 +416,8 @@ class ExternalToolsService extends ChangeNotifier {
           'preview_url': screenshotUrl,
           'width': width,
           'height': height,
+          'unique_id': uniqueId,
+          'timestamp': timestamp,
         });
       } catch (e) {
         errors.add('URL ${i + 1} ($url): $e');
@@ -549,10 +559,16 @@ class ExternalToolsService extends ChangeNotifier {
     }
 
     try {
-      // Add timestamp and random seed to ensure unique images
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final seed = (timestamp % 1000000) + (prompt.hashCode % 1000).abs();
-      final enhancedPrompt = enhance ? prompt : '$prompt [seed:$seed]';
+      // Create truly unique seed using multiple factors to prevent duplicate images
+      final timestamp = DateTime.now().microsecondsSinceEpoch;
+      final random = (timestamp * 1337) % 1000000;
+      final promptHash = prompt.hashCode.abs() % 100000;
+      final modelHash = model.hashCode.abs() % 10000;
+      final seed = (timestamp % 1000000) + random + promptHash + modelHash;
+      
+      // Always add unique elements to prompt to ensure different images
+      final uniqueId = '${timestamp}_${seed}';
+      final enhancedPrompt = enhance ? '$prompt [unique_id:$uniqueId]' : '$prompt [seed:$seed,id:$uniqueId]';
       
       final response = await http.post(
         Uri.parse('https://ahamai-api.officialprakashkrsingh.workers.dev/v1/images/generations'),
@@ -568,6 +584,7 @@ class ExternalToolsService extends ChangeNotifier {
           'enhance': enhance,
           'seed': seed,
           'timestamp': timestamp,
+          'unique_id': uniqueId,
         }),
       ).timeout(Duration(seconds: 60));
 
@@ -1132,16 +1149,51 @@ class ExternalToolsService extends ChangeNotifier {
         diagram = _enhanceMermaidDiagram(diagram, diagramType);
       }
 
-      final url = 'https://kroki.io/mermaid/$format?theme=$theme';
-      final response = await http
-          .post(
-            Uri.parse(url),
-            headers: {'Content-Type': 'text/plain; charset=utf-8'},
-            body: diagram,
-          )
-          .timeout(const Duration(seconds: 30));
+      // Use Kroki with proper encoding and fallback options
+      final encodedDiagram = base64Encode(utf8.encode(diagram));
+      final primaryUrl = 'https://kroki.io/mermaid/$format/$encodedDiagram';
+      final fallbackUrl = 'https://mermaid.ink/svg/${base64Encode(utf8.encode(diagram))}';
+      
+      http.Response? response;
+      String usedService = '';
+      
+      // Try primary service (Kroki)
+      try {
+        response = await http
+            .get(Uri.parse(primaryUrl))
+            .timeout(const Duration(seconds: 20));
+        usedService = 'Kroki.io';
+        
+        // If response is not successful, try POST method
+        if (response.statusCode != 200) {
+          response = await http
+              .post(
+                Uri.parse('https://kroki.io/mermaid/$format'),
+                headers: {
+                  'Content-Type': 'text/plain; charset=utf-8',
+                  'Accept': format == 'png' ? 'image/png' : 'image/svg+xml',
+                },
+                body: diagram,
+              )
+              .timeout(const Duration(seconds: 20));
+        }
+      } catch (e) {
+        debugPrint('Kroki service failed: $e');
+      }
+      
+      // Try fallback service (Mermaid.ink) if primary failed
+      if (response == null || response.statusCode != 200) {
+        try {
+          response = await http
+              .get(Uri.parse(fallbackUrl))
+              .timeout(const Duration(seconds: 20));
+          usedService = 'Mermaid.ink';
+        } catch (e) {
+          debugPrint('Fallback service failed: $e');
+        }
+      }
 
-      if (response.statusCode == 200) {
+      if (response != null && response.statusCode == 200) {
         final bytes = response.bodyBytes;
         final mime = format == 'png' ? 'image/png' : 'image/svg+xml';
         final base64Data = base64Encode(bytes);
@@ -1157,14 +1209,16 @@ class ExternalToolsService extends ChangeNotifier {
           'enhanced_diagram': diagram,
           'image_url': dataUrl,
           'size': bytes.length,
+          'service_used': usedService,
           'tool_executed': true,
           'execution_time': DateTime.now().toIso8601String(),
-          'description': 'Professional Mermaid diagram generated successfully with ${autoEnhance ? 'enhanced styling' : 'original styling'}',
+          'description': 'Professional Mermaid diagram generated successfully with ${autoEnhance ? 'enhanced styling' : 'original styling'} using $usedService',
         };
       } else {
         return {
           'success': false,
-          'error': 'Failed to generate chart: HTTP ${response.statusCode}',
+          'error': 'Failed to generate chart: HTTP ${response?.statusCode ?? 'No response'} from all services',
+          'tried_services': ['Kroki.io', 'Mermaid.ink'],
           'tool_executed': true,
         };
       }
@@ -1192,51 +1246,84 @@ class ExternalToolsService extends ChangeNotifier {
     }
 
     try {
-      // For now, we'll create a simple HTML-based collage using an external service
-      // This is a workaround since we can't directly manipulate images in Dart without additional packages
-      
+      // Create a proper collage by combining images using an HTML-to-image service
       final collageHtml = _generateCollageHtml(imageUrls.cast<String>(), layout, maxWidth, maxHeight);
       
-      // Use a service to convert HTML to image
-      final response = await http.post(
-        Uri.parse('https://htmlcsstoimage.com/demo_run'),
-        headers: {
-          'Content-Type': 'application/json',
+      // Try multiple HTML-to-image services for better reliability
+      final services = [
+        {
+          'url': 'https://htmlcsstoimage.com/demo_run',
+          'body': {
+            'html': collageHtml,
+            'css': _getCollageCSS(layout),
+            'google_fonts': 'Roboto',
+            'width': maxWidth,
+            'height': maxHeight,
+          }
         },
-        body: jsonEncode({
-          'html': collageHtml,
-          'css': _getCollageCSS(layout),
-          'google_fonts': 'Roboto',
-          'width': maxWidth,
-          'height': maxHeight,
-        }),
-      ).timeout(Duration(seconds: 30));
-
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        final imageUrl = data['url'] as String? ?? '';
-        
-        if (imageUrl.isNotEmpty) {
-          // Fetch the image and convert to base64
-          final imgResponse = await http.get(Uri.parse(imageUrl)).timeout(Duration(seconds: 20));
-          if (imgResponse.statusCode == 200) {
-            final base64Image = base64Encode(imgResponse.bodyBytes);
-            final dataUrl = 'data:image/png;base64,$base64Image';
-            
-            return {
-              'success': true,
-              'image_url': dataUrl,
-              'original_images': imageUrls,
-              'layout': layout,
-              'width': maxWidth,
-              'height': maxHeight,
-              'image_count': imageUrls.length,
-              'tool_executed': true,
-              'execution_time': DateTime.now().toIso8601String(),
-              'description': 'Image collage created successfully with ${imageUrls.length} images in $layout layout',
-            };
+        {
+          'url': 'https://api.htmlcsstoimage.com/v1/image',
+          'body': {
+            'html': collageHtml,
+            'css': _getCollageCSS(layout),
+            'width': maxWidth,
+            'height': maxHeight,
           }
         }
+      ];
+
+      Map<String, dynamic>? imageResult;
+      
+      for (final service in services) {
+        try {
+          final response = await http.post(
+            Uri.parse(service['url'] as String),
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode(service['body']),
+          ).timeout(Duration(seconds: 20));
+
+          if (response.statusCode == 200) {
+            final data = json.decode(response.body);
+            final imageUrl = data['url'] as String? ?? '';
+            
+            if (imageUrl.isNotEmpty) {
+              // Fetch the actual image and convert to base64
+              final imgResponse = await http.get(Uri.parse(imageUrl)).timeout(Duration(seconds: 15));
+              if (imgResponse.statusCode == 200) {
+                final base64Image = base64Encode(imgResponse.bodyBytes);
+                final dataUrl = 'data:image/png;base64,$base64Image';
+                imageResult = {
+                  'success': true,
+                  'image_url': dataUrl,
+                  'service_used': service['url'],
+                };
+                break;
+              }
+            }
+          }
+        } catch (e) {
+          debugPrint('Service ${service['url']} failed: $e');
+          continue;
+        }
+      }
+
+      // Return successful result if we got an image
+      if (imageResult != null) {
+        return {
+          'success': true,
+          'image_url': imageResult['image_url'],
+          'original_images': imageUrls,
+          'layout': layout,
+          'width': maxWidth,
+          'height': maxHeight,
+          'image_count': imageUrls.length,
+          'service_used': imageResult['service_used'],
+          'tool_executed': true,
+          'execution_time': DateTime.now().toIso8601String(),
+          'description': 'Image collage created successfully with ${imageUrls.length} images in $layout layout',
+        };
       }
       
       // Fallback: create a simple URL-based collage reference
