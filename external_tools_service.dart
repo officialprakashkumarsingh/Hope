@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
@@ -116,22 +117,40 @@ class ExternalToolsService extends ChangeNotifier {
     // Screenshot vision tool - analyzes screenshots using vision AI
     _tools['screenshot_vision'] = ExternalTool(
       name: 'screenshot_vision',
-      description: 'Analyzes screenshots using vision AI models. The AI can use this tool to understand what is visible in screenshots it has generated.',
+      description: 'Analyzes screenshots using vision AI models. Can handle single images or multiple images (creates collage). The AI can use this tool to understand what is visible in screenshots it has generated.',
       parameters: {
-        'image_url': {'type': 'string', 'description': 'URL of the screenshot to analyze', 'required': true},
-        'question': {'type': 'string', 'description': 'Optional question about the image', 'default': 'What do you see in this image?'},
+        'image_url': {'type': 'string', 'description': 'URL of the screenshot to analyze (required if image_urls not provided)', 'required': false},
+        'image_urls': {'type': 'array', 'description': 'Multiple URLs of screenshots to analyze as a collage (required if image_url not provided)', 'required': false},
+        'question': {'type': 'string', 'description': 'Optional question about the image(s)', 'default': 'What do you see in this image?'},
         'model': {'type': 'string', 'description': 'Vision model to use', 'default': 'claude-4-sonnet'},
+        'collage_layout': {'type': 'string', 'description': 'Layout for multiple images (grid, horizontal, vertical)', 'default': 'grid'},
       },
       execute: _screenshotVision,
     );
 
-    // Mermaid chart generation - create diagrams using mermaid.js via the Kroki service
+    // Image collage tool - creates collages from multiple images
+    _tools['create_image_collage'] = ExternalTool(
+      name: 'create_image_collage',
+      description: 'Creates a collage from multiple images for easier analysis. Useful when you have multiple screenshots or images that need to be analyzed together.',
+      parameters: {
+        'image_urls': {'type': 'array', 'description': 'Array of image URLs to combine into a collage', 'required': true},
+        'layout': {'type': 'string', 'description': 'Layout type (grid, horizontal, vertical)', 'default': 'grid'},
+        'max_width': {'type': 'integer', 'description': 'Maximum width of the collage in pixels', 'default': 1200},
+        'max_height': {'type': 'integer', 'description': 'Maximum height of the collage in pixels', 'default': 800},
+      },
+      execute: _createImageCollage,
+    );
+
+    // Enhanced Mermaid chart generation - create professional diagrams using mermaid.js
     _tools['mermaid_chart'] = ExternalTool(
       name: 'mermaid_chart',
-      description: 'Generates charts and diagrams using mermaid.js and returns a preview image. Useful for simple flow charts, sequence diagrams, and more.',
+      description: 'Generates professional charts and diagrams using mermaid.js with enhanced styling and structure. Supports flowcharts, sequence diagrams, class diagrams, gitgraph, gantt charts, and more. Automatically optimizes diagram structure and appearance.',
       parameters: {
-        'diagram': {'type': 'string', 'description': 'Mermaid diagram code', 'required': true},
+        'diagram': {'type': 'string', 'description': 'Mermaid diagram code (will be enhanced automatically)', 'required': true},
+        'diagram_type': {'type': 'string', 'description': 'Type of diagram (flowchart, sequence, class, gitgraph, gantt, pie, journey)', 'default': 'flowchart'},
         'format': {'type': 'string', 'description': 'Image format (svg or png)', 'default': 'svg'},
+        'theme': {'type': 'string', 'description': 'Theme (default, dark, forest, base, neutral)', 'default': 'default'},
+        'auto_enhance': {'type': 'boolean', 'description': 'Automatically enhance diagram structure and styling', 'default': true},
       },
       execute: _generateMermaidChart,
     );
@@ -530,6 +549,11 @@ class ExternalToolsService extends ChangeNotifier {
     }
 
     try {
+      // Add timestamp and random seed to ensure unique images
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final seed = (timestamp % 1000000) + (prompt.hashCode % 1000).abs();
+      final enhancedPrompt = enhance ? prompt : '$prompt [seed:$seed]';
+      
       final response = await http.post(
         Uri.parse('https://ahamai-api.officialprakashkrsingh.workers.dev/v1/images/generations'),
         headers: {
@@ -538,10 +562,12 @@ class ExternalToolsService extends ChangeNotifier {
         },
         body: jsonEncode({
           'model': model,
-          'prompt': prompt,
+          'prompt': enhancedPrompt,
           'width': width,
           'height': height,
           'enhance': enhance,
+          'seed': seed,
+          'timestamp': timestamp,
         }),
       ).timeout(Duration(seconds: 60));
 
@@ -555,16 +581,18 @@ class ExternalToolsService extends ChangeNotifier {
 
         return {
           'success': true,
-          'prompt': prompt,
+          'original_prompt': prompt,
+          'enhanced_prompt': enhancedPrompt,
           'model': model,
           'width': width,
           'height': height,
           'enhance': enhance,
+          'seed': seed,
           'image_url': dataUrl,
           'image_size': imageBytes.length,
           'tool_executed': true,
           'execution_time': DateTime.now().toIso8601String(),
-          'description': 'Image generated successfully using $model model',
+          'description': 'Image generated successfully using $model model with unique seed $seed',
         };
       } else {
         return {
@@ -897,18 +925,55 @@ class ExternalToolsService extends ChangeNotifier {
 
   Future<Map<String, dynamic>> _screenshotVision(Map<String, dynamic> params) async {
     final imageUrl = params['image_url'] as String? ?? '';
+    final imageUrls = params['image_urls'] as List<dynamic>? ?? [];
     final question = params['question'] as String? ?? 'What do you see in this image?';
     final model = params['model'] as String? ?? 'claude-4-sonnet';
+    final collageLayout = params['collage_layout'] as String? ?? 'grid';
 
-    if (imageUrl.isEmpty) {
+    // Validate that we have at least one image
+    if (imageUrl.isEmpty && imageUrls.isEmpty) {
       return {
         'success': false,
-        'error': 'image_url parameter is required. Please provide the URL of the image to analyze.',
-        'hint': 'Use this tool after taking a screenshot with the screenshot tool, or provide a direct image URL.',
+        'error': 'Either image_url or image_urls parameter is required. Please provide the URL(s) of the image(s) to analyze.',
+        'hint': 'Use this tool after taking screenshots with the screenshot tool, or provide direct image URL(s).',
         'tool_executed': false,
       };
     }
 
+    // Handle multiple images by creating a collage first
+    if (imageUrls.isNotEmpty) {
+      final collageResult = await _createImageCollage({
+        'image_urls': imageUrls,
+        'layout': collageLayout,
+        'max_width': 1200,
+        'max_height': 800,
+      });
+      
+      if (!collageResult['success']) {
+        return {
+          'success': false,
+          'error': 'Failed to create collage for multiple images: ${collageResult['error']}',
+          'tool_executed': false,
+        };
+      }
+      
+      // Use the collage image for analysis
+      final collageImageUrl = collageResult['image_url'] as String;
+      return await _analyzeSingleImage(collageImageUrl, question, model, {
+        'image_count': imageUrls.length,
+        'layout': collageLayout,
+        'is_collage': true,
+        'original_urls': imageUrls,
+      });
+    }
+
+    // Handle single image
+    return await _analyzeSingleImage(imageUrl, question, model, {
+      'is_collage': false,
+    });
+  }
+
+  Future<Map<String, dynamic>> _analyzeSingleImage(String imageUrl, String question, String model, Map<String, dynamic> metadata) async {
     try {
       // Validate that the URL is accessible or is a data URL
       bool isValidUrl = false;
@@ -1009,6 +1074,7 @@ class ExternalToolsService extends ChangeNotifier {
           'execution_time': DateTime.now().toIso8601String(),
           'description': 'Image analyzed successfully using vision AI',
           'image_type': imageUrl.startsWith('data:') ? 'uploaded_image' : 'screenshot_url',
+          ...metadata,
         };
       } else {
         // Try to parse error details
@@ -1045,7 +1111,10 @@ class ExternalToolsService extends ChangeNotifier {
 
   Future<Map<String, dynamic>> _generateMermaidChart(Map<String, dynamic> params) async {
     String diagram = params['diagram'] as String? ?? '';
+    final diagramType = params['diagram_type'] as String? ?? 'flowchart';
     final format = params['format'] as String? ?? 'svg';
+    final theme = params['theme'] as String? ?? 'default';
+    final autoEnhance = params['auto_enhance'] as bool? ?? true;
 
     diagram = diagram.trim();
 
@@ -1058,7 +1127,12 @@ class ExternalToolsService extends ChangeNotifier {
     }
 
     try {
-      final url = 'https://kroki.io/mermaid/$format?theme=dark';
+      // Auto-enhance the diagram if requested
+      if (autoEnhance) {
+        diagram = _enhanceMermaidDiagram(diagram, diagramType);
+      }
+
+      final url = 'https://kroki.io/mermaid/$format?theme=$theme';
       final response = await http
           .post(
             Uri.parse(url),
@@ -1076,12 +1150,16 @@ class ExternalToolsService extends ChangeNotifier {
         return {
           'success': true,
           'format': format,
-          'diagram': diagram,
+          'diagram_type': diagramType,
+          'theme': theme,
+          'auto_enhanced': autoEnhance,
+          'original_diagram': params['diagram'],
+          'enhanced_diagram': diagram,
           'image_url': dataUrl,
           'size': bytes.length,
           'tool_executed': true,
           'execution_time': DateTime.now().toIso8601String(),
-          'description': 'Mermaid diagram generated successfully',
+          'description': 'Professional Mermaid diagram generated successfully with ${autoEnhance ? 'enhanced styling' : 'original styling'}',
         };
       } else {
         return {
@@ -1097,5 +1175,267 @@ class ExternalToolsService extends ChangeNotifier {
         'tool_executed': true,
       };
     }
+  }
+
+  Future<Map<String, dynamic>> _createImageCollage(Map<String, dynamic> params) async {
+    final imageUrls = params['image_urls'] as List<dynamic>? ?? [];
+    final layout = params['layout'] as String? ?? 'grid';
+    final maxWidth = params['max_width'] as int? ?? 1200;
+    final maxHeight = params['max_height'] as int? ?? 800;
+
+    if (imageUrls.isEmpty) {
+      return {
+        'success': false,
+        'error': 'image_urls parameter is required and must contain at least one URL',
+        'tool_executed': false,
+      };
+    }
+
+    try {
+      // For now, we'll create a simple HTML-based collage using an external service
+      // This is a workaround since we can't directly manipulate images in Dart without additional packages
+      
+      final collageHtml = _generateCollageHtml(imageUrls.cast<String>(), layout, maxWidth, maxHeight);
+      
+      // Use a service to convert HTML to image
+      final response = await http.post(
+        Uri.parse('https://htmlcsstoimage.com/demo_run'),
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({
+          'html': collageHtml,
+          'css': _getCollageCSS(layout),
+          'google_fonts': 'Roboto',
+          'width': maxWidth,
+          'height': maxHeight,
+        }),
+      ).timeout(Duration(seconds: 30));
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final imageUrl = data['url'] as String? ?? '';
+        
+        if (imageUrl.isNotEmpty) {
+          // Fetch the image and convert to base64
+          final imgResponse = await http.get(Uri.parse(imageUrl)).timeout(Duration(seconds: 20));
+          if (imgResponse.statusCode == 200) {
+            final base64Image = base64Encode(imgResponse.bodyBytes);
+            final dataUrl = 'data:image/png;base64,$base64Image';
+            
+            return {
+              'success': true,
+              'image_url': dataUrl,
+              'original_images': imageUrls,
+              'layout': layout,
+              'width': maxWidth,
+              'height': maxHeight,
+              'image_count': imageUrls.length,
+              'tool_executed': true,
+              'execution_time': DateTime.now().toIso8601String(),
+              'description': 'Image collage created successfully with ${imageUrls.length} images in $layout layout',
+            };
+          }
+        }
+      }
+      
+      // Fallback: create a simple URL-based collage reference
+      return {
+        'success': true,
+        'image_url': 'data:text/html;base64,${base64Encode(utf8.encode(collageHtml))}',
+        'original_images': imageUrls,
+        'layout': layout,
+        'width': maxWidth,
+        'height': maxHeight,
+        'image_count': imageUrls.length,
+        'tool_executed': true,
+        'execution_time': DateTime.now().toIso8601String(),
+        'description': 'Collage HTML created (fallback mode) with ${imageUrls.length} images',
+        'note': 'Using HTML representation as image conversion service is unavailable',
+      };
+      
+    } catch (e) {
+      return {
+        'success': false,
+        'error': 'Failed to create image collage: $e',
+        'original_images': imageUrls,
+        'layout': layout,
+        'tool_executed': true,
+      };
+    }
+  }
+
+  String _generateCollageHtml(List<String> imageUrls, String layout, int maxWidth, int maxHeight) {
+    final images = imageUrls.map((url, index) => MapEntry(index, url));
+    
+    switch (layout.toLowerCase()) {
+      case 'horizontal':
+        return '''
+          <div class="collage horizontal">
+            ${imageUrls.map((url) => '<img src="$url" alt="Image" />').join('')}
+          </div>
+        ''';
+      case 'vertical':
+        return '''
+          <div class="collage vertical">
+            ${imageUrls.map((url) => '<img src="$url" alt="Image" />').join('')}
+          </div>
+        ''';
+      case 'grid':
+      default:
+        final cols = (imageUrls.length <= 4) ? 2 : 3;
+        return '''
+          <div class="collage grid" style="grid-template-columns: repeat($cols, 1fr);">
+            ${imageUrls.map((url) => '<img src="$url" alt="Image" />').join('')}
+          </div>
+        ''';
+    }
+  }
+
+  String _getCollageCSS(String layout) {
+    return '''
+      .collage {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        gap: 10px;
+        padding: 10px;
+        background: #f5f5f5;
+        box-sizing: border-box;
+      }
+      
+      .collage.horizontal {
+        flex-direction: row;
+        overflow-x: auto;
+      }
+      
+      .collage.vertical {
+        flex-direction: column;
+        overflow-y: auto;
+      }
+      
+      .collage.grid {
+        display: grid;
+        grid-gap: 10px;
+      }
+      
+      .collage img {
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
+        border: 2px solid #ddd;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      }
+      
+      .collage.horizontal img {
+        height: calc(100% - 20px);
+        width: auto;
+      }
+      
+      .collage.vertical img {
+        width: calc(100% - 20px);
+        height: auto;
+      }
+      
+      .collage.grid img {
+        width: 100%;
+        height: 100%;
+      }
+    ''';
+  }
+
+  String _enhanceMermaidDiagram(String diagram, String diagramType) {
+    // Remove any existing styling to apply new enhanced styling
+    String enhancedDiagram = diagram;
+    
+    switch (diagramType.toLowerCase()) {
+      case 'flowchart':
+        enhancedDiagram = _enhanceFlowchart(diagram);
+        break;
+      case 'sequence':
+        enhancedDiagram = _enhanceSequenceDiagram(diagram);
+        break;
+      case 'class':
+        enhancedDiagram = _enhanceClassDiagram(diagram);
+        break;
+      case 'gantt':
+        enhancedDiagram = _enhanceGanttChart(diagram);
+        break;
+      case 'pie':
+        enhancedDiagram = _enhancePieChart(diagram);
+        break;
+      default:
+        enhancedDiagram = _enhanceGeneralDiagram(diagram);
+    }
+    
+    return enhancedDiagram;
+  }
+
+  String _enhanceFlowchart(String diagram) {
+    // Add professional styling to flowcharts
+    if (!diagram.contains('classDef')) {
+      diagram += '''
+
+%%{init: {"flowchart": {"htmlLabels": true, "curve": "basis"}}}%%
+
+classDef default fill:#e1f5fe,stroke:#01579b,stroke-width:2px,color:#000
+classDef startEnd fill:#4caf50,stroke:#2e7d32,stroke-width:3px,color:#fff
+classDef process fill:#2196f3,stroke:#1565c0,stroke-width:2px,color:#fff
+classDef decision fill:#ff9800,stroke:#e65100,stroke-width:2px,color:#fff
+classDef error fill:#f44336,stroke:#c62828,stroke-width:2px,color:#fff''';
+    }
+    
+    return diagram;
+  }
+
+  String _enhanceSequenceDiagram(String diagram) {
+    // Add professional styling to sequence diagrams
+    if (!diagram.contains('%%{init:')) {
+      diagram = '''%%{init: {"sequence": {"mirrorActors": false, "showSequenceNumbers": true}}}%%
+''' + diagram;
+    }
+    
+    return diagram;
+  }
+
+  String _enhanceClassDiagram(String diagram) {
+    // Add professional styling to class diagrams
+    if (!diagram.contains('%%{init:')) {
+      diagram = '''%%{init: {"class": {"htmlLabels": true}}}%%
+''' + diagram;
+    }
+    
+    return diagram;
+  }
+
+  String _enhanceGanttChart(String diagram) {
+    // Add professional styling to gantt charts
+    if (!diagram.contains('%%{init:')) {
+      diagram = '''%%{init: {"gantt": {"numberSectionStyles": 4}}}%%
+''' + diagram;
+    }
+    
+    return diagram;
+  }
+
+  String _enhancePieChart(String diagram) {
+    // Add professional styling to pie charts
+    if (!diagram.contains('%%{init:')) {
+      diagram = '''%%{init: {"pie": {"textPosition": 0.5}, "themeVariables": {"pieOuterStrokeWidth": "5px"}}}%%
+''' + diagram;
+    }
+    
+    return diagram;
+  }
+
+  String _enhanceGeneralDiagram(String diagram) {
+    // Add general enhancements
+    if (!diagram.contains('%%{init:')) {
+      diagram = '''%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#ff0000"}}}%%
+''' + diagram;
+    }
+    
+    return diagram;
   }
 }

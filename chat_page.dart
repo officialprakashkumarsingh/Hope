@@ -273,12 +273,19 @@ For parallel tool execution (when multiple tools are needed), use this array for
 ```
 
 🎯 WHEN TO USE TOOLS:
-- **screenshot**: Capture webpages, see websites visually (always provide url parameter)
-- **generate_image**: Create images, art, visual content (models: flux, turbo)
+- **screenshot**: Capture single/multiple webpages visually (supports urls array for batch)
+- **generate_image**: Create unique images with enhanced prompts (models: flux, turbo) - now generates different images for different prompts
 - **fetch_image_models**: Show available image generation models
 - **web_search**: Get real-time information from DuckDuckGo and Wikipedia (enhanced with deep search)
-- **screenshot_vision**: Analyze screenshots you've captured to understand content
-- **mermaid_chart**: Generate diagrams and charts using mermaid.js (always include the `diagram` parameter)
+- **screenshot_vision**: Analyze single images OR multiple images as collage (ALWAYS include image_url or image_urls parameter)
+- **create_image_collage**: Combine multiple images into one collage for easier analysis
+- **mermaid_chart**: Generate professional diagrams with auto-enhancement (flowchart, sequence, class, gantt, etc.)
+
+🔍 ENHANCED FEATURES:
+- Image generation now uses unique seeds to prevent duplicate images
+- Screenshot analysis supports multiple images via automatic collage creation
+- Mermaid diagrams auto-enhanced with professional styling and structure
+- All tools optimized for parallel execution when appropriate
 - **fetch_ai_models**: List available AI chat models
 - **switch_ai_model**: Change to different AI model
 
