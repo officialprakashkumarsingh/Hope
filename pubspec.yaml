@@ -29,6 +29,7 @@ dependencies:
   # File operations
   file_picker: ^6.1.1
   archive: ^3.4.9
+  flutter_svg: ^2.2.0
 
 dev_dependencies:
   flutter_test:
